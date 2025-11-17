@@ -1,12 +1,12 @@
+import os
 from flask import Flask, request, render_template_string, abort
 import sqlite3
 import secrets
 import smtplib
-import os
 
 DB_PATH = "votes.db"
-# IMPORTANT: use 127.0.0.1 since that works on your machine
-BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = os.environ.get("BASE_URL", "http://127.0.0.1:5000")
+
 
 app = Flask(__name__)
 
@@ -338,6 +338,85 @@ def add_match(name):
     match_id = cur.lastrowid
     conn.close()
     return match_id
+
+from flask import Response  # add to your existing imports if not already
+
+@app.route("/admin/setup", methods=["GET", "POST"])
+def admin_setup():
+    # Very simple auth: ?key=SECRET
+    admin_key = os.environ.get("ADMIN_KEY")
+    key = request.args.get("key")
+    if not admin_key or key != admin_key:
+        return "Forbidden", 403
+
+    if request.method == "GET":
+        # Show a simple form
+        return """
+        <h1>Admin Setup</h1>
+        <p>Paste CSV data with columns: Player,Email (header required)</p>
+        <form method="post">
+          <label>Round name:</label><br>
+          <input type="text" name="round_name" size="40" required><br><br>
+          <label>CSV data:</label><br>
+          <textarea name="csv" rows="15" cols="80" placeholder="Player,Email&#10;John Smith,john@example.com"></textarea><br><br>
+          <button type="submit">Set up round</button>
+        </form>
+        """
+
+    # POST: process form
+    round_name = request.form.get("round_name", "").strip()
+    csv_text = request.form.get("csv", "").strip()
+
+    if not round_name or not csv_text:
+        return "Round name and CSV are required", 400
+
+    import io
+    import pandas as pd
+
+    # Read CSV from the textarea
+    try:
+        df = pd.read_csv(io.StringIO(csv_text))
+    except Exception as e:
+        return f"Error reading CSV: {e}", 400
+
+    # Basic validation
+    if "Player" not in df.columns or "Email" not in df.columns:
+        return "CSV must have columns 'Player' and 'Email' in the header row.", 400
+
+    # Clean up
+    df["Player"] = df["Player"].astype(str).str.strip()
+    df["Email"] = df["Email"].astype(str).str.strip()
+
+    # Init DB and add data
+    init_db()
+
+    missing_emails = []
+    for _, row in df.iterrows():
+        name = row["Player"]
+        email = row["Email"]
+
+        if not name:
+            continue
+
+        add_player(name)
+
+        if email:
+            add_voter(name, email)
+        else:
+            missing_emails.append(name)
+
+    # Create match and send emails
+    match_id = add_match(round_name)
+    send_vote_emails(match_id)
+
+    # Summary response (only for you, no emails or tokens shown)
+    lines = [f"Setup done for round: {round_name!r}", f"Match id: {match_id}"]
+    if missing_emails:
+        lines.append("Players with missing email (NOT added as voters):")
+        lines.extend(f"- {name}" for name in missing_emails)
+
+    return Response("<br>".join(lines), mimetype="text/html")
+
 
 if __name__ == "__main__":
     init_db()
