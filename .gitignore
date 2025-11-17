@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 votes.db
 .env
+players.xlsx
+player_emails.xlsx
